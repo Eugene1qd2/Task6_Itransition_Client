@@ -1,0 +1,259 @@
+﻿@page "/board/{id}"
+
+@using Blazor.Extensions
+@using Blazor.Extensions.Canvas
+@using Blazor.Extensions.Canvas.Canvas2D
+@using Models
+@using OnlinePaintServer.Models
+@using PaintOnlineClient.AvnCanvasHelper
+@using System.Drawing
+
+@inject IJSRuntime JsRuntime;
+
+<div class="container p-0 m-0">
+    <div id="canvasHolder" style="position: fixed; width: 100%; height: 100%" class="z-0">
+        <div class="z-3">
+            <div class="nav position-absolute border-dark bg-dark rounded-pill p-1 m-3" id="menu1">
+                <input @onchange="()=>{ChangeTool(ToolEnum.Pen);}" type="radio" class="btn-check rounded-circle" name="options" id="option1" autocomplete="off" checked>
+                <label class="btn btn-outline-light rounded-circle d-flex align-items-center" for="option1" style="width:40px;height:40px"><i class="fa fa-pencil"></i></label>
+
+                <input @onchange="()=>{ChangeTool(ToolEnum.Eraser);}" type="radio" class="btn-check" name="options" id="option2" autocomplete="off">
+                <label class="btn btn-outline-light rounded-circle d-flex align-items-center mx-2" for="option2" style="width:40px;height:40px"><i class="fa fa-eraser"></i></label>
+
+                <input @onclick="ClearImage" type="button" class="btn-check" id="option4" />
+                <label class="btn btn-outline-light rounded-circle d-flex align-items-center me-2" for="option4" style="width:40px;height:40px"><i class="fa fa-trash"></i></label>
+
+                <NavLink href="/">
+                    <button class="btn btn-outline-light rounded-circle d-flex align-items-center" style="width:40px;height:40px">
+                        <i class="fa fa-arrow-left" style="text-decoration:none;"></i>
+                    </button>
+                </NavLink>
+            </div>
+            <div class="nav position-absolute border-dark bg-dark rounded-pill p-1 mt-3" style="left:300px" id="menu3">
+                <input type="range" min="1" max="10" @bind-value="strokeWidth" />
+            </div>
+            <div class="position-absolute border-dark bg-dark rounded-pill px-1 mx-3" style="top:75px" id="menu2">
+                @foreach (var color in colors)
+                {
+                    <input @onclick="async ()=>{SelectColor(color);}" type="radio" class="btn-check rounded-circle" name="colors" id="color-option-@color" autocomplete="off">
+                    <label class="btn btn-outline-light rounded-circle d-flex align-items-center p-1 my-1" for="color-option-@color" style="width:40px;height:40px"><div class="rounded-circle w-100 h-100" style="background-color:@color"></div></label>
+                }
+            </div>
+        </div>
+        <BECanvas Width="6000" Height="4000" @ref="CanvasRef"></BECanvas>
+    </div>
+</div>
+
+
+@code {
+    [Parameter]
+    public string Id { get; set; }
+
+    ClientObject client;
+
+    private Size _size = new Size();
+    private PaintBoard paintBoard = new PaintBoard();
+    private Canvas2DContext ctx;
+    protected BECanvasComponent CanvasRef;
+    private DateTime LastRender;
+    string[] colors = { "#000000", "#ff0000", "#00ff00", "#0000ff", "#ffff00" };
+
+    ToolEnum currentTool = ToolEnum.Pen;
+    string currentColor = "#000000";
+    int strokeWidth { get; set; } = 1;
+
+    bool shouldUpdate;
+    bool isDrawing;
+    Random random;
+    private int currentBrushId;
+
+    LineData currentLine;
+
+    //логика выбора инструментов и цветов
+    public void ChangeTool(ToolEnum tool)
+    {
+        currentTool = tool;
+        shouldUpdate = true;
+    }
+    public void SelectColor(string color)
+    {
+        currentColor = color;
+        shouldUpdate = true;
+    }
+
+
+    //инит
+    protected override async Task OnInitializedAsync()
+    {
+        random = new Random();
+        paintBoard.id = Id;
+
+        client = new ClientObject();
+
+        client.OnGetBoards += async (List<BoardData> boardsData) =>
+        {
+            Console.WriteLine("BoardsData got");
+        };
+
+        client.OnGetBoardData += async (BoardData data) =>
+        {
+            Console.WriteLine(data.boardId + "|");
+            paintBoard.paintObjects = new List<LineData>();
+            foreach (var item in data.lines)
+            {
+                paintBoard.AppendObject(item);
+            }
+            shouldUpdate = true;
+        };
+
+        client.OnAppendLine += async (LineData data) =>
+        {
+            paintBoard.AppendObject(data);
+            shouldUpdate = true;
+        };
+
+        client.OnClearBoard += async (string id) =>
+        {
+            paintBoard.paintObjects.Clear();
+            shouldUpdate = true;
+        };
+
+        await client.ConnnectToServer();
+        await client.AskForBoardDataAsync(paintBoard.id);
+    }
+
+    //отрисовка
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        this.ctx = await CanvasRef.CreateCanvas2DAsync();
+        await JsRuntime.InvokeAsync<object>("initRenderJS", DotNetObjectReference.Create(this));
+        await base.OnInitializedAsync();
+    }
+
+    [JSInvokable]
+    public void ResizeInBlazor(double width, double height)
+    {
+        paintBoard.Resize(width, height);
+        shouldUpdate = true;
+    }
+
+    [JSInvokable]
+    public async void RenderInBlazor(float timeStamp)
+    {
+        if (!shouldUpdate)
+            return;
+        shouldUpdate = false;
+
+        if (paintBoard.paintObjects.Count == 0)
+            return;
+
+        try
+        {
+            if (currentLine != null)
+                await DrawLineAsync(currentLine);
+            else
+            {
+
+                await this.ctx.ClearRectAsync(0, 0, paintBoard.Width, paintBoard.Height);
+                foreach (var paintObject in paintBoard.paintObjects)
+                {
+                    var line = paintObject;
+                    await DrawLineAsync(line);
+                }
+
+            }
+            await this.ctx.EndBatchAsync();
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine(ex.Message);
+        }
+    }
+
+    public async Task DrawLineAsync(LineData line)
+    {
+        await this.ctx.SetLineWidthAsync(line.Width);
+        await this.ctx.BeginPathAsync();
+        await this.ctx.MoveToAsync(line.Points[0].X, line.Points[0].Y);
+        for (int i = 1; i < line.Points.Count; i++)
+        {
+            this.ctx.LineToAsync(line.Points[i].X, line.Points[i].Y);
+        }
+        await this.ctx.SetStrokeStyleAsync(line.Color);
+        await this.ctx.StrokeAsync();
+    }
+
+    //ивенты мыши
+    [JSInvokable]
+    public async ValueTask MouseDownEvent(MouseEventArgs e, int which)
+    {
+        if (which != 1)
+            return;
+        switch (currentTool)
+        {
+            case ToolEnum.Pen:
+                await createNewLineAsync(e.ClientX, e.ClientY, currentColor);
+                break;
+            case ToolEnum.Eraser:
+                await createNewLineAsync(e.ClientX, e.ClientY, "#ffffff");
+                break;
+            default:
+                break;
+        }
+        isDrawing = true;
+        shouldUpdate = true;
+    }
+
+    public async Task createNewLineAsync(double x, double y, string color)
+    {
+        currentLine = new LineData();
+        currentLine.AppendPoint(x, y);
+        currentLine.Color = color;
+        currentLine.Width = strokeWidth;
+    }
+
+    [JSInvokable]
+    public async ValueTask MouseUpEvent(MouseEventArgs e, int which)
+    {
+        if (which == 1)
+        {
+            isDrawing = false;
+            shouldUpdate = true;
+            if (currentLine != null)
+            {
+                if (client.isConnected)
+                {
+                    paintBoard.AppendObject(currentLine);
+                    await client.TellLineAdded(Id, currentLine);
+                    currentLine = null;
+                }
+            }
+        }
+    }
+
+    [JSInvokable]
+    public async ValueTask MouseMoveEvent(MouseEventArgs e)
+    {
+        if (isDrawing)
+        {
+            currentLine.AppendPoint(new PaintOnlineClient.Models.BoardPoint(e.ClientX, e.ClientY));
+            shouldUpdate = true;
+        }
+    }
+
+
+    private string RandomColor(Random rand) =>
+    string.Format("#{0:X6}", rand.Next(0xFFFFFF));
+
+    private async Task ClearImage(MouseEventArgs e)
+    {
+        await client.TellToClearBoard(Id);
+        paintBoard.paintObjects.Clear();
+        currentLine = null;
+        shouldUpdate = true;
+    }
+
+    private async Task GoBack(MouseEventArgs e)
+    {
+    }
+}

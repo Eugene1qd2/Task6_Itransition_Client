@@ -1,0 +1,75 @@
+﻿@page "/"
+@using System.Net.Sockets;
+@using OnlinePaintServer.Models
+@using PaintOnlineClient.Models
+@inject NavigationManager NavigationManager
+
+<PageTitle>Index</PageTitle>
+
+<div class="container my-2">
+    <h2>Create new board</h2>
+    <div class="d-flex">
+        <input type="text" placeholder="Board name" @bind-value="boardName" class="input-group me-2"/>
+        <button class="btn btn-outline-primary" @onclick="CreateNewBoard">Create</button>
+    </div>
+</div>
+
+
+<div class="container d-flex justify-content-between flex-wrap">
+    @foreach (var item in boards)
+    {
+        string boardHref = $"board/{item.boardId}";
+        <div class="card m-2" style="width:18rem; min-width:16rem">
+            <img src="img/empty.png" class="card-img-top" alt="img/empty.png">
+            <div class="card-body">
+                <p class="card-text">@item.boardName</p>
+                <p class="card-text">@item.boardId</p>
+                <NavLink class="btn btn-primary" href=@boardHref>
+                    Go to board
+                </NavLink>
+            </div>
+        </div>
+    }
+</div>
+
+
+@code {
+
+    public List<BoardData> boards { get; set; }
+    ClientObject client;
+
+    string boardName { get; set; }
+
+    protected override async Task OnInitializedAsync()
+    {
+        client = new ClientObject();
+        boards = new List<BoardData>();
+        client.OnGetBoards += async (List<BoardData> boardsData) =>
+        {
+            boards = boardsData;
+            await InvokeAsync(StateHasChanged);
+        };
+
+        client.OnGetBoardData += async (BoardData data) =>
+        {
+            Console.WriteLine("BoardData got");
+        };
+
+        client.OnAppendLine += async (LineData data) =>
+        {
+            Console.WriteLine("Line appended");
+        };
+
+        client.OnClearBoard += async (string id) =>
+        {
+            Console.WriteLine("Clear board "+id);
+        };
+
+        await client.ConnnectToServer();
+    }
+    private async Task CreateNewBoard(MouseEventArgs e)
+    {
+        var id=await client.CreateNewBoardAsync(boardName);
+        NavigationManager.NavigateTo($"/board/{id}");
+    }
+}
